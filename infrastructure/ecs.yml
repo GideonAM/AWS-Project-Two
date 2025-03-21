@@ -40,7 +40,7 @@ Parameters:
   DBInstanceClass:
     Description: Database instance type
     Type: String
-    Default: db.t3.small
+    Default: db.m5d.large
 
   DBName:
     Description: Name of the database
@@ -58,7 +58,6 @@ Resources:
         GenerateStringKey: 'password'
         PasswordLength: 16
         ExcludeCharacters: '"@/\\\'
-
 
   DBSubnetGroup:
     Type: AWS::RDS::DBSubnetGroup
@@ -104,7 +103,6 @@ Resources:
         - Key: Name
           Value: !Sub ${EnvironmentName}-postgres
 
-  # Store these as SSM parameters for future reference, but don't use them in this template
   DBUrlParameter:
     Type: AWS::SSM::Parameter
     Properties:
@@ -246,7 +244,6 @@ Resources:
           Essential: true
           PortMappings:
             - ContainerPort: !Ref ContainerPort
-          # Direct references instead of SSM parameter references
           Environment:
             - Name: AWS_REGION
               Value: !Ref AWS::Region
