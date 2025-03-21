@@ -10,7 +10,7 @@ Parameters:
   ImageURI:
     Description: URI of the ECR image to deploy
     Type: String
-    Default: ${AWS::AccountId}.dkr.ecr.us-east-1.amazonaws.com/aws-project-one:latest
+    Default: ${AWS::AccountId}.dkr.ecr.us-east-1.amazonaws.com/aws-project-two:latest
 
   ContainerPort:
     Description: Container port for the application
@@ -104,7 +104,6 @@ Resources:
         - Key: Name
           Value: !Sub ${EnvironmentName}-postgres
 
-  # Store DB credentials in Parameter Store for easier access
   DBUrlParameter:
     Type: AWS::SSM::Parameter
     Properties:
@@ -264,21 +263,21 @@ Resources:
             - ContainerPort: !Ref ContainerPort
           Environment:
             - Name: AWS_ACCESS_KEY
-              Value: !Sub '{{resolve:ssm:/app/${EnvironmentName}/aws-access-key}}'
+            - Value: !Sub '{{resolve:ssm:/app/${EnvironmentName}/aws-access-key}}'
             - Name: AWS_SECRET_KEY
-              Value: !Sub '{{resolve:ssm:/app/${EnvironmentName}/aws-secret-key}}'
+            - Value: !Sub '{{resolve:ssm:/app/${EnvironmentName}/aws-secret-key}}'
             - Name: AWS_REGION
-              Value: !Sub '{{resolve:ssm:/app/${EnvironmentName}/aws-region}}'
+              Value: !Ref AWS::Region
             - Name: cloud.aws.stack.auto
               Value: 'false'
             - Name: S3_BUCKET_NAME
-              Value: !Sub '{{resolve:ssm:/app/${EnvironmentName}/s3-bucket-name}}'
+              Value: !Ref S3Bucket
             - Name: AWS_DB_URL
-              Value: !Sub '{{resolve:ssm:/app/${EnvironmentName}/db-url}}'
+              Value: !Sub 'jdbc:postgresql://${PostgreSQLDB.Endpoint.Address}:${PostgreSQLDB.Endpoint.Port}/${DBName}'
             - Name: AWS_DB_USERNAME
-              Value: !Sub '{{resolve:ssm:/app/${EnvironmentName}/db-username}}'
+              Value: !Join [ '', [ '{{resolve:secretsmanager:', !Ref DBCredentialsSecret, ':SecretString:username}}' ] ]
             - Name: AWS_DB_PASSWORD
-              Value: !Sub '{{resolve:ssm:/app/${EnvironmentName}/db-password}}'
+              Value: !Join [ '', [ '{{resolve:secretsmanager:', !Ref DBCredentialsSecret, ':SecretString:password}}' ] ]
           LogConfiguration:
             LogDriver: awslogs
             Options:
@@ -392,7 +391,6 @@ Resources:
           ContainerPort: !Ref ContainerPort
           TargetGroupArn: !Ref TargetGroupBlue
 
-  # Auto Scaling Configuration
   ScalableTarget:
     Type: AWS::ApplicationAutoScaling::ScalableTarget
     Properties:
@@ -446,7 +444,6 @@ Resources:
         ScaleInCooldown: 300
         ScaleOutCooldown: 60
 
-  # CodeDeploy for Blue/Green Deployment
   CodeDeployApplication:
     Type: AWS::CodeDeploy::Application
     Properties:
