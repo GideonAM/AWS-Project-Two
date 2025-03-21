@@ -86,7 +86,7 @@ Resources:
     Properties:
       DBName: !Ref DBName
       Engine: postgres
-      EngineVersion: '14.5'
+      EngineVersion: '17.2-R1'
       MultiAZ: true
       StorageType: gp2
       AllocatedStorage: 20
