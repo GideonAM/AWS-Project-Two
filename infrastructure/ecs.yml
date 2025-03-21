@@ -104,6 +104,7 @@ Resources:
         - Key: Name
           Value: !Sub ${EnvironmentName}-postgres
 
+  # Store these as SSM parameters for future reference, but don't use them in this template
   DBUrlParameter:
     Type: AWS::SSM::Parameter
     Properties:
@@ -162,22 +163,6 @@ Resources:
       Type: String
       Value: !Ref AWS::Region
       Description: AWS Region
-
-  AWSAccessKeyParameter:
-    Type: AWS::SSM::Parameter
-    Properties:
-      Name: !Sub /app/${EnvironmentName}/aws-access-key
-      Type: String
-      Value: "{{resolve:secretsmanager:MySecretAccessKey:SecretString:AccessKey}}"
-      Description: AWS Access Key
-
-  AWSSecretKeyParameter:
-    Type: AWS::SSM::Parameter
-    Properties:
-      Name: !Sub /app/${EnvironmentName}/aws-secret-key
-      Type: String
-      Value: "{{resolve:secretsmanager:MySecretAccessKey:SecretString:SecretKey}}"
-      Description: AWS Secret Key
 
   ECSCluster:
     Type: AWS::ECS::Cluster
@@ -261,11 +246,8 @@ Resources:
           Essential: true
           PortMappings:
             - ContainerPort: !Ref ContainerPort
+          # Direct references instead of SSM parameter references
           Environment:
-            - Name: AWS_ACCESS_KEY
-            - Value: !Sub '{{resolve:ssm:/app/${EnvironmentName}/aws-access-key}}'
-            - Name: AWS_SECRET_KEY
-            - Value: !Sub '{{resolve:ssm:/app/${EnvironmentName}/aws-secret-key}}'
             - Name: AWS_REGION
               Value: !Ref AWS::Region
             - Name: cloud.aws.stack.auto
@@ -275,9 +257,9 @@ Resources:
             - Name: AWS_DB_URL
               Value: !Sub 'jdbc:postgresql://${PostgreSQLDB.Endpoint.Address}:${PostgreSQLDB.Endpoint.Port}/${DBName}'
             - Name: AWS_DB_USERNAME
-              Value: !Join [ '', [ '{{resolve:secretsmanager:', !Ref DBCredentialsSecret, ':SecretString:username}}' ] ]
+              Value: !Join ['', ['{{resolve:secretsmanager:', !Ref DBCredentialsSecret, ':SecretString:username}}' ]]
             - Name: AWS_DB_PASSWORD
-              Value: !Join [ '', [ '{{resolve:secretsmanager:', !Ref DBCredentialsSecret, ':SecretString:password}}' ] ]
+              Value: !Join ['', ['{{resolve:secretsmanager:', !Ref DBCredentialsSecret, ':SecretString:password}}' ]]
           LogConfiguration:
             LogDriver: awslogs
             Options:
@@ -473,8 +455,8 @@ Resources:
               ListenerArns:
                 - !Ref ALBListener
             TargetGroups:
-              - Name: !Sub ${EnvironmentName}-tg-blue
-              - Name: !Sub ${EnvironmentName}-tg-green
+              - Name: !GetAtt TargetGroupBlue.TargetGroupName
+              - Name: !GetAtt TargetGroupGreen.TargetGroupName
       ECSServices:
         - ClusterName: !Ref ECSCluster
           ServiceName: !GetAtt ECSService.Name
