@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gideon's AWS Project Two</title>
+    <link rel="stylesheet" th:href="@{/css/styles.css}">
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500&display=swap" rel="stylesheet">
+</head>
+<body>
+<div class="container">
+    <header>
+        <h1>AWS Project Two</h1>
+
+        <div class="upload-container">
+            <form th:action="@{/upload}" method="post" enctype="multipart/form-data">
+                <div class="file-input-wrapper">
+                    <input type="file" name="file" id="file-upload" accept="image/*" required>
+                    <label for="file-upload" class="custom-file-upload">Choose File</label>
+                    <span id="file-name">No file chosen</span>
+                </div>
+                <div class="description-wrapper">
+                    <textarea name="description" id="image-description" placeholder="Image Description" rows="3"></textarea>
+                </div>
+                <button type="submit" class="upload-btn">Upload</button>
+            </form>
+        </div>
+
+        <div th:if="${message}" class="alert success">
+            <p th:text="${message}"></p>
+        </div>
+        <div th:if="${error}" class="alert error">
+            <p th:text="${error}"></p>
+        </div>
+    </header>
+
+    <div class="gallery-container">
+        <div th:if="${#lists.isEmpty(images)}" class="no-images">
+            <p>No images found. Upload some images to get started!</p>
+        </div>
+
+        <div id="image-gallery" class="image-gallery">
+        </div>
+
+        <div class="pagination-container">
+            <div id="pagination-controls" class="pagination-controls">
+            </div>
+        </div>
+    </div>
+</div>
+
+<script th:inline="javascript">
+    const allImages = /*[[${images}]]*/ [];
+
+    const imagesPerPage = 12;
+    let currentPage = 1;
+
+    document.getElementById('file-upload').addEventListener('change', function() {
+        const fileName = this.files[0] ? this.files[0].name : 'No file chosen';
+        document.getElementById('file-name').textContent = fileName;
+    });
+
+    function displayImages(page) {
+        const gallery = document.getElementById('image-gallery');
+        gallery.innerHTML = '';
+
+        const startIndex = (page - 1) * imagesPerPage;
+        const endIndex = Math.min(startIndex + imagesPerPage, allImages.length);
+
+        for (let i = startIndex; i < endIndex; i++) {
+            const image = allImages[i];
+            const imageCard = document.createElement('div');
+            imageCard.className = 'image-card';
+
+            const img = document.createElement('img');
+            img.src = image.url;
+            img.alt = image.name;
+            img.loading = 'lazy';
+
+            const overlay = document.createElement('div');
+            overlay.className = 'image-overlay';
+
+            const imageName = document.createElement('p');
+            imageName.className = 'image-name';
+            imageName.textContent = image.name.length > 20 ?
+                image.name.substring(0, 17) + '...' :
+                image.name;
+
+            const imageDescription = document.createElement('p');
+            imageDescription.className = 'image-description';
+            imageDescription.textContent = image.description || 'No description';
+
+            const deleteLink = document.createElement('a');
+            deleteLink.href = `/delete/${image.name}`;
+            deleteLink.className = 'delete-btn';
+            deleteLink.textContent = 'Delete';
+            deleteLink.onclick = function(e) {
+                if (!confirm('Are you sure you want to delete this image?')) {
+                    e.preventDefault();
+                }
+            };
+
+            overlay.appendChild(imageName);
+            overlay.appendChild(imageDescription);
+            overlay.appendChild(deleteLink);
+
+            imageCard.appendChild(img);
+            imageCard.appendChild(overlay);
+
+            gallery.appendChild(imageCard);
+        }
+    }
+
+    function updatePagination() {
+        const totalPages = Math.ceil(allImages.length / imagesPerPage);
+        const controls = document.getElementById('pagination-controls');
+        controls.innerHTML = '';
+
+        if (totalPages <= 1) {
+            return;
+        }
+
+        const prevBtn = document.createElement('button');
+        prevBtn.textContent = '«';
+        prevBtn.className = currentPage === 1 ? 'page-btn disabled' : 'page-btn';
+        prevBtn.disabled = currentPage === 1;
+        prevBtn.onclick = function() {
+            if (currentPage > 1) {
+                currentPage--;
+                displayImages(currentPage);
+                updatePagination();
+            }
+        };
+        controls.appendChild(prevBtn);
+
+        const maxButtons = 5;
+        const startPage = Math.max(1, currentPage - Math.floor(maxButtons / 2));
+        const endPage = Math.min(totalPages, startPage + maxButtons - 1);
+
+        for (let i = startPage; i <= endPage; i++) {
+            const pageBtn = document.createElement('button');
+            pageBtn.textContent = i;
+            pageBtn.className = i === currentPage ? 'page-btn active' : 'page-btn';
+            pageBtn.onclick = function() {
+                currentPage = i;
+                displayImages(currentPage);
+                updatePagination();
+            };
+            controls.appendChild(pageBtn);
+        }
+
+        const nextBtn = document.createElement('button');
+        nextBtn.textContent = '»';
+        nextBtn.className = currentPage === totalPages ? 'page-btn disabled' : 'page-btn';
+        nextBtn.disabled = currentPage === totalPages;
+        nextBtn.onclick = function() {
+            if (currentPage < totalPages) {
+                currentPage++;
+                displayImages(currentPage);
+                updatePagination();
+            }
+        };
+        controls.appendChild(nextBtn);
+    }
+
+    window.onload = function() {
+        displayImages(currentPage);
+        updatePagination();
+    };
+</script>
+</body>
+</html>

@@ -1,0 +1,85 @@
+name: Deploy Spring Boot to AWS ECR and Trigger CodeDeploy
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'src/**'
+      - 'pom.xml'
+      - 'Dockerfile'
+      - 'appspec-template.yaml'
+      - '.github/workflows/push-to-ecr.yml'
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v3
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Build with Maven
+        run: mvn clean package -DskipTests
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, tag, and push image to Amazon ECR
+        id: build-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
+          IMAGE_TAG: latest
+        run: |
+          set -e
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -t $ECR_REGISTRY/$ECR_REPOSITORY:latest .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+      - name: Get latest Task Definition ARN
+        id: get-task-def
+        run: |
+          TASK_DEF_ARN=$(aws ecs describe-task-definition --task-definition app-task --query "taskDefinition.taskDefinitionArn" --region ${{ secrets.AWS_REGION }} --output text)
+          echo "TASK_DEF_ARN=$TASK_DEF_ARN" >> $GITHUB_ENV
+
+      - name: Create appspec.yaml
+        run: |
+          cat <<EOF > appspec.yaml
+          version: 0.0
+          Resources:
+            - TargetService:
+                Type: AWS::ECS::Service
+                Properties:
+                  TaskDefinition: ${{ env.TASK_DEF_ARN }}
+                  LoadBalancerInfo:
+                    ContainerName: app-container
+                    ContainerPort: 8080
+          EOF
+
+      - name: Upload appspec.yaml to S3
+        run: |
+          aws s3 cp appspec.yaml s3://test-bucket-for-aws-project-one/appspec.yaml
+
+      - name: Trigger CodeDeploy Deployment
+        run: |
+          aws deploy create-deployment \
+            --application-name app-deploy-app \
+            --deployment-group-name app-deploy-group \
+            --revision 'revisionType=S3,s3Location={bucket="test-bucket-for-aws-project-one",key="appspec.yaml",bundleType="YAML"}' \
+            --region "${{ secrets.AWS_REGION }}"

@@ -1,0 +1,81 @@
+name: Deploy Infrastructure
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'infrastructure/**'
+
+jobs:
+  deploy-vpc:
+    name: Deploy VPC Infrastructure
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Deploy VPC CloudFormation stack
+        id: deploy-vpc
+        uses: aws-actions/aws-cloudformation-github-deploy@v1
+        with:
+          name: app-vpc-stack
+          template: infrastructure/vpc.yml
+          parameter-overrides: "EnvironmentName=app"
+          capabilities: CAPABILITY_NAMED_IAM
+          no-fail-on-empty-changeset: "1"
+
+      - name: Wait for VPC deployment to complete
+        run: aws cloudformation wait stack-create-complete --stack-name app-vpc-stack || aws cloudformation wait stack-update-complete --stack-name app-vpc-stack
+
+  deploy-ecs:
+    name: Deploy ECS and CodeDeploy
+    runs-on: ubuntu-latest
+    needs: deploy-vpc
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Set default ECR image URI
+        id: ecr-image
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          REGION=${{ secrets.AWS_REGION }}
+          ECR_REPO=${{ secrets.ECR_REPOSITORY }}
+          echo "image=${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/${ECR_REPO}:latest" >> $GITHUB_OUTPUT
+
+      - name: Deploy ECS CloudFormation stack
+        uses: aws-actions/aws-cloudformation-github-deploy@v1
+        with:
+          name: app-ecs-stack
+          template: infrastructure/ecs.yml
+          parameter-overrides: >-
+            EnvironmentName=app,
+            ImageURI=${{ steps.ecr-image.outputs.image }}
+          capabilities: CAPABILITY_NAMED_IAM
+          no-fail-on-empty-changeset: "1"
+
+      - name: Store stack outputs
+        run: |
+          CLUSTER_NAME=$(aws cloudformation describe-stacks --stack-name app-ecs-stack --query "Stacks[0].Outputs[?OutputKey=='ClusterName'].OutputValue" --output text)
+          SERVICE_NAME=$(aws cloudformation describe-stacks --stack-name app-ecs-stack --query "Stacks[0].Outputs[?OutputKey=='ServiceName'].OutputValue" --output text)
+          LB_DNS=$(aws cloudformation describe-stacks --stack-name app-ecs-stack --query "Stacks[0].Outputs[?OutputKey=='LoadBalancerDNS'].OutputValue" --output text)
+          
+          echo "ECS Cluster: $CLUSTER_NAME"
+          echo "ECS Service: $SERVICE_NAME"
+          echo "Load Balancer DNS: $LB_DNS"

@@ -1,0 +1,545 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'ECS Cluster with RDS PostgreSQL, Auto Scaling, and CodeDeploy for Blue/Green Deployment'
+
+Parameters:
+  EnvironmentName:
+    Description: Environment name prefix
+    Type: String
+    Default: app
+
+  ImageURI:
+    Description: URI of the ECR image to deploy
+    Type: String
+    Default: ${AWS::AccountId}.dkr.ecr.us-east-1.amazonaws.com/aws-project-one:latest
+
+  ContainerPort:
+    Description: Container port for the application
+    Type: Number
+    Default: 8080
+
+  TaskCPU:
+    Description: CPU units for the ECS task
+    Type: String
+    Default: '256'
+
+  TaskMemory:
+    Description: Memory for the ECS task
+    Type: String
+    Default: '512'
+
+  MinContainerCount:
+    Description: Minimum number of containers
+    Type: Number
+    Default: 2
+
+  MaxContainerCount:
+    Description: Maximum number of containers
+    Type: Number
+    Default: 5
+
+  DBInstanceClass:
+    Description: Database instance type
+    Type: String
+    Default: db.t3.small
+
+  DBName:
+    Description: Name of the database
+    Type: String
+    Default: appdb
+
+Resources:
+  DBCredentialsSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub '${EnvironmentName}/db-credentials'
+      Description: RDS PostgreSQL credentials
+      GenerateSecretString:
+        SecretStringTemplate: '{"username": "dbadmin"}'
+        GenerateStringKey: 'password'
+        PasswordLength: 16
+        ExcludeCharacters: '"@/\\\'
+
+
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Subnet group for RDS PostgreSQL
+      SubnetIds: !Split
+        - ","
+        - Fn::ImportValue: !Sub "${EnvironmentName}-PrivateSubnets"
+
+  RDSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for RDS PostgreSQL
+      VpcId:
+        Fn::ImportValue: !Sub "${EnvironmentName}-VPC"
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId:
+            Fn::ImportValue: !Sub "${EnvironmentName}-ECSSecurityGroup"
+
+  PostgreSQLDB:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBName: !Ref DBName
+      Engine: postgres
+      EngineVersion: '14.5'
+      MultiAZ: true
+      StorageType: gp2
+      AllocatedStorage: 20
+      DBInstanceClass: !Ref DBInstanceClass
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      VPCSecurityGroups:
+        - !Ref RDSSecurityGroup
+      MasterUsername: !Join ['', ['{{resolve:secretsmanager:', !Ref DBCredentialsSecret, ':SecretString:username}}' ]]
+      MasterUserPassword: !Join ['', ['{{resolve:secretsmanager:', !Ref DBCredentialsSecret, ':SecretString:password}}' ]]
+      BackupRetentionPeriod: 7
+      PubliclyAccessible: false
+      StorageEncrypted: true
+      DeletionProtection: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName}-postgres
+
+  # Store DB credentials in Parameter Store for easier access
+  DBUrlParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /app/${EnvironmentName}/db-url
+      Type: String
+      Value: !Sub 'jdbc:postgresql://${PostgreSQLDB.Endpoint.Address}:${PostgreSQLDB.Endpoint.Port}/${DBName}'
+      Description: JDBC URL for the PostgreSQL database
+
+  DBUsernameParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /app/${EnvironmentName}/db-username
+      Type: String
+      Value: !Join ['', ['{{resolve:secretsmanager:', !Ref DBCredentialsSecret, ':SecretString:username}}' ]]
+      Description: Username for the PostgreSQL database
+
+  DBPasswordParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /app/${EnvironmentName}/db-password
+      Type: String
+      Value: !Join ['', ['{{resolve:secretsmanager:', !Ref DBCredentialsSecret, ':SecretString:password}}' ]]
+      Description: Password for the PostgreSQL database
+      Tier: Standard
+
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub ${EnvironmentName}-images-${AWS::AccountId}
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders:
+              - '*'
+            AllowedMethods:
+              - GET
+              - PUT
+              - POST
+              - DELETE
+              - HEAD
+            AllowedOrigins:
+              - '*'
+            MaxAge: 3600
+
+  S3BucketParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /app/${EnvironmentName}/s3-bucket-name
+      Type: String
+      Value: !Ref S3Bucket
+      Description: S3 bucket for storing images
+
+  AWSRegionParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /app/${EnvironmentName}/aws-region
+      Type: String
+      Value: !Ref AWS::Region
+      Description: AWS Region
+
+  AWSAccessKeyParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /app/${EnvironmentName}/aws-access-key
+      Type: String
+      Value: "{{resolve:secretsmanager:MySecretAccessKey:SecretString:AccessKey}}"
+      Description: AWS Access Key
+
+  AWSSecretKeyParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /app/${EnvironmentName}/aws-secret-key
+      Type: String
+      Value: "{{resolve:secretsmanager:MySecretAccessKey:SecretString:SecretKey}}"
+      Description: AWS Secret Key
+
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub ${EnvironmentName}-cluster
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName}-cluster
+
+  TaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: SSMParameterAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameters
+                Resource:
+                  - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/app/${EnvironmentName}/*'
+        - PolicyName: SecretsManagerAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource:
+                  - !Ref DBCredentialsSecret
+
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: S3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:ListBucket
+                  - s3:DeleteObject
+                Resource:
+                  - !Sub 'arn:aws:s3:::${S3Bucket}'
+                  - !Sub 'arn:aws:s3:::${S3Bucket}/*'
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub ${EnvironmentName}-task
+      Cpu: !Ref TaskCPU
+      Memory: !Ref TaskMemory
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      ExecutionRoleArn: !Ref TaskExecutionRole
+      TaskRoleArn: !Ref TaskRole
+      ContainerDefinitions:
+        - Name: !Sub ${EnvironmentName}-container
+          Image: !Ref ImageURI
+          Essential: true
+          PortMappings:
+            - ContainerPort: !Ref ContainerPort
+          Environment:
+            - Name: AWS_ACCESS_KEY
+              Value: !Sub '{{resolve:ssm:/app/${EnvironmentName}/aws-access-key}}'
+            - Name: AWS_SECRET_KEY
+              Value: !Sub '{{resolve:ssm:/app/${EnvironmentName}/aws-secret-key}}'
+            - Name: AWS_REGION
+              Value: !Sub '{{resolve:ssm:/app/${EnvironmentName}/aws-region}}'
+            - Name: cloud.aws.stack.auto
+              Value: 'false'
+            - Name: S3_BUCKET_NAME
+              Value: !Sub '{{resolve:ssm:/app/${EnvironmentName}/s3-bucket-name}}'
+            - Name: AWS_DB_URL
+              Value: !Sub '{{resolve:ssm:/app/${EnvironmentName}/db-url}}'
+            - Name: AWS_DB_USERNAME
+              Value: !Sub '{{resolve:ssm:/app/${EnvironmentName}/db-username}}'
+            - Name: AWS_DB_PASSWORD
+              Value: !Sub '{{resolve:ssm:/app/${EnvironmentName}/db-password}}'
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /ecs/${EnvironmentName}-service
+      RetentionInDays: 30
+
+  ALB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub ${EnvironmentName}-alb
+      Scheme: internet-facing
+      LoadBalancerAttributes:
+        - Key: idle_timeout.timeout_seconds
+          Value: '60'
+      Subnets: !Split
+        - ","
+        - Fn::ImportValue: !Sub "${EnvironmentName}-PublicSubnets"
+      SecurityGroups:
+        - !Ref ALBSecurityGroup
+
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for the ALB
+      VpcId:
+        Fn::ImportValue: !Sub "${EnvironmentName}-VPC"
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+
+  TargetGroupBlue:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub ${EnvironmentName}-tg-blue
+      Port: !Ref ContainerPort
+      Protocol: HTTP
+      TargetType: ip
+      VpcId:
+        Fn::ImportValue: !Sub "${EnvironmentName}-VPC"
+      HealthCheckIntervalSeconds: 30
+      HealthCheckPath: /health
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: '30'
+
+  TargetGroupGreen:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub ${EnvironmentName}-tg-green
+      Port: !Ref ContainerPort
+      Protocol: HTTP
+      TargetType: ip
+      VpcId:
+        Fn::ImportValue: !Sub "${EnvironmentName}-VPC"
+      HealthCheckIntervalSeconds: 30
+      HealthCheckPath: /health
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: '30'
+
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroupBlue
+      LoadBalancerArn: !Ref ALB
+      Port: 80
+      Protocol: HTTP
+
+  ECSService:
+    Type: AWS::ECS::Service
+    DependsOn: ALBListener
+    Properties:
+      ServiceName: !Sub ${EnvironmentName}-service
+      Cluster: !Ref ECSCluster
+      TaskDefinition: !Ref TaskDefinition
+      DeploymentController:
+        Type: CODE_DEPLOY
+      DesiredCount: !Ref MinContainerCount
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups:
+            - Fn::ImportValue: !Sub "${EnvironmentName}-ECSSecurityGroup"
+          Subnets: !Split
+            - ","
+            - Fn::ImportValue: !Sub "${EnvironmentName}-PrivateSubnets"
+      LoadBalancers:
+        - ContainerName: !Sub ${EnvironmentName}-container
+          ContainerPort: !Ref ContainerPort
+          TargetGroupArn: !Ref TargetGroupBlue
+
+  # Auto Scaling Configuration
+  ScalableTarget:
+    Type: AWS::ApplicationAutoScaling::ScalableTarget
+    Properties:
+      MaxCapacity: !Ref MaxContainerCount
+      MinCapacity: !Ref MinContainerCount
+      ResourceId: !Sub service/${ECSCluster}/${ECSService.Name}
+      ScalableDimension: ecs:service:DesiredCount
+      ServiceNamespace: ecs
+      RoleARN: !Sub arn:aws:iam::${AWS::AccountId}:role/aws-service-role/ecs.application-autoscaling.amazonaws.com/AWSServiceRoleForApplicationAutoScaling_ECSService
+
+  CPUScalingPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: !Sub ${EnvironmentName}-cpu-scaling
+      PolicyType: TargetTrackingScaling
+      ScalingTargetId: !Ref ScalableTarget
+      TargetTrackingScalingPolicyConfiguration:
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ECSServiceAverageCPUUtilization
+        TargetValue: 70
+        ScaleInCooldown: 300
+        ScaleOutCooldown: 60
+
+  MemoryScalingPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: !Sub ${EnvironmentName}-memory-scaling
+      PolicyType: TargetTrackingScaling
+      ScalingTargetId: !Ref ScalableTarget
+      TargetTrackingScalingPolicyConfiguration:
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ECSServiceAverageMemoryUtilization
+        TargetValue: 80
+        ScaleInCooldown: 300
+        ScaleOutCooldown: 60
+
+  RequestCountScalingPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: !Sub ${EnvironmentName}-request-count-scaling
+      PolicyType: TargetTrackingScaling
+      ScalingTargetId: !Ref ScalableTarget
+      TargetTrackingScalingPolicyConfiguration:
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ALBRequestCountPerTarget
+          ResourceLabel: !Join
+            - '/'
+            - - !GetAtt ALB.LoadBalancerFullName
+              - !GetAtt TargetGroupBlue.TargetGroupFullName
+        TargetValue: 1000
+        ScaleInCooldown: 300
+        ScaleOutCooldown: 60
+
+  # CodeDeploy for Blue/Green Deployment
+  CodeDeployApplication:
+    Type: AWS::CodeDeploy::Application
+    Properties:
+      ApplicationName: !Sub ${EnvironmentName}-deploy-app
+      ComputePlatform: ECS
+
+  DeploymentGroup:
+    Type: AWS::CodeDeploy::DeploymentGroup
+    Properties:
+      ApplicationName: !Ref CodeDeployApplication
+      DeploymentGroupName: !Sub ${EnvironmentName}-deploy-group
+      DeploymentConfigName: CodeDeployDefault.ECSAllAtOnce
+      ServiceRoleArn: !GetAtt CodeDeployServiceRole.Arn
+      DeploymentStyle:
+        DeploymentType: BLUE_GREEN
+        DeploymentOption: WITH_TRAFFIC_CONTROL
+      BlueGreenDeploymentConfiguration:
+        DeploymentReadyOption:
+          ActionOnTimeout: CONTINUE_DEPLOYMENT
+          WaitTimeInMinutes: 0
+        TerminateBlueInstancesOnDeploymentSuccess:
+          Action: TERMINATE
+          TerminationWaitTimeInMinutes: 5
+      LoadBalancerInfo:
+        TargetGroupPairInfoList:
+          - ProdTrafficRoute:
+              ListenerArns:
+                - !Ref ALBListener
+            TargetGroups:
+              - Name: !Sub ${EnvironmentName}-tg-blue
+              - Name: !Sub ${EnvironmentName}-tg-green
+      ECSServices:
+        - ClusterName: !Ref ECSCluster
+          ServiceName: !GetAtt ECSService.Name
+
+  CodeDeployServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codedeploy.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSCodeDeployRoleForECS
+
+Outputs:
+  ClusterName:
+    Description: ECS Cluster Name
+    Value: !Ref ECSCluster
+    Export:
+      Name: !Sub "${EnvironmentName}-ECSCluster"
+
+  ServiceName:
+    Description: ECS Service Name
+    Value: !GetAtt ECSService.Name
+    Export:
+      Name: !Sub "${EnvironmentName}-ECSService"
+
+  LoadBalancerDNS:
+    Description: DNS of the Load Balancer
+    Value: !GetAtt ALB.DNSName
+    Export:
+      Name: !Sub "${EnvironmentName}-LoadBalancerDNS"
+
+  DatabaseEndpoint:
+    Description: Endpoint of the PostgreSQL database
+    Value: !GetAtt PostgreSQLDB.Endpoint.Address
+    Export:
+      Name: !Sub "${EnvironmentName}-DatabaseEndpoint"
+
+  DatabaseUsername:
+    Description: Username for database access
+    Value: !Join ['', ['{{resolve:secretsmanager:', !Ref DBCredentialsSecret, ':SecretString:username}}' ]]
+    Export:
+      Name: !Sub "${EnvironmentName}-DatabaseUsername"
+
+  S3BucketName:
+    Description: S3 Bucket for storing images
+    Value: !Ref S3Bucket
+    Export:
+      Name: !Sub "${EnvironmentName}-S3BucketName"
+
+  CodeDeployApplication:
+    Description: CodeDeploy Application Name
+    Value: !Ref CodeDeployApplication
+    Export:
+      Name: !Sub "${EnvironmentName}-CodeDeployApplication"
+
+  CodeDeployDeploymentGroup:
+    Description: CodeDeploy Deployment Group Name
+    Value: !Ref DeploymentGroup
+    Export:
+      Name: !Sub "${EnvironmentName}-CodeDeployDeploymentGroup"
