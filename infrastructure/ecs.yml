@@ -246,6 +246,10 @@ Resources:
           PortMappings:
             - ContainerPort: !Ref ContainerPort
           Environment:
+            - Name: AWS_ACCESS_KEY
+            - Value: !Sub '{{resolve:ssm:/app/${EnvironmentName}/aws-access-key}}'
+            - Name: AWS_SECRET_KEY
+            - Value: !Sub '{{resolve:ssm:/app/${EnvironmentName}/aws-secret-key}}'
             - Name: AWS_REGION
               Value: !Ref AWS::Region
             - Name: cloud.aws.stack.auto
