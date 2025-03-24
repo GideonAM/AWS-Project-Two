@@ -51,7 +51,7 @@ Resources:
   DBCredentialsSecret:
     Type: AWS::SecretsManager::Secret
     Properties:
-      Name: !Sub '${EnvironmentName}/secret-db-credentials'
+      Name: !Sub '${EnvironmentName}/db-secret-credentials'
       Description: RDS PostgreSQL credentials
       GenerateSecretString:
         SecretStringTemplate: '{"username": "dbadmin"}'
@@ -247,9 +247,9 @@ Resources:
             - ContainerPort: !Ref ContainerPort
           Environment:
             - Name: AWS_ACCESS_KEY
-            - Value: !Sub '{{resolve:ssm:/app/${EnvironmentName}/aws-access-key}}'
+              Value: !Sub '{{resolve:ssm:/app/${EnvironmentName}/aws-access-key}}'
             - Name: AWS_SECRET_KEY
-            - Value: !Sub '{{resolve:ssm:/app/${EnvironmentName}/aws-secret-key}}'
+              Value: !Sub '{{resolve:ssm:/app/${EnvironmentName}/aws-secret-key}}'
             - Name: AWS_REGION
               Value: !Ref AWS::Region
             - Name: cloud.aws.stack.auto
