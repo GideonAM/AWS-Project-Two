@@ -81,5 +81,5 @@ jobs:
           aws deploy create-deployment \
             --application-name app-deploy-app \
             --deployment-group-name app-deploy-group \
-            --revision 'revisionType=S3,s3Location={bucket="test-bucket-for-aws-project-one",key="appspec.yaml",bundleType="YAML"}' \
+            --revision 'revisionType=S3,s3Location={bucket="test-bucket-for-aws-project-two",key="appspec.yaml",bundleType="YAML"}' \
             --region "${{ secrets.AWS_REGION }}"
