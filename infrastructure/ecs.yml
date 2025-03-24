@@ -51,7 +51,7 @@ Resources:
   DBCredentialsSecret:
     Type: AWS::SecretsManager::Secret
     Properties:
-      Name: !Sub '${EnvironmentName}/db-credentials'
+      Name: !Sub '${EnvironmentName}/secret-db-credentials'
       Description: RDS PostgreSQL credentials
       GenerateSecretString:
         SecretStringTemplate: '{"username": "dbadmin"}'
