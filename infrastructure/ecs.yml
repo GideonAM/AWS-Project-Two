@@ -89,6 +89,7 @@ Resources:
       MultiAZ: true
       StorageType: gp2
       AllocatedStorage: 20
+      MaxAllocatedStorage: 100
       DBInstanceClass: !Ref DBInstanceClass
       DBSubnetGroupName: !Ref DBSubnetGroup
       VPCSecurityGroups:
