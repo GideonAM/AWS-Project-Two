@@ -10,7 +10,7 @@ Parameters:
   ImageURI:
     Description: URI of the ECR image to deploy
     Type: String
-    Default: ${AWS::AccountId}.dkr.ecr.us-east-1.amazonaws.com/aws-project-two:latest
+    Default: ${AWS::AccountId}.dkr.ecr.eu-west-1.amazonaws.com/aws-project-two:latest
 
   ContainerPort:
     Description: Container port for the application
